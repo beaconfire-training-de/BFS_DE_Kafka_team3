@@ -117,11 +117,62 @@ class cdcProducer(Producer):
 if __name__ == '__main__':
     encoder = StringSerializer('utf-8')
     producer = cdcProducer()
-    print("CDC Producer started. Polling for changes...")
-
-    # while producer.running:
-    #     # your implementation goes here
-    #     pass
+    
+    print("CDC Producer started.")
+    
+    # ========== SNAPSHOT PHASE ==========
+    if producer.last_processed_id == 0:
+        print("Starting SNAPSHOT processing...")
+        try:
+            conn = psycopg2.connect(
+                host="localhost",
+                database="postgres",
+                user="postgres",
+                port='5432',
+                password="postgres")
+            conn.autocommit = True
+            cur = conn.cursor()
+            
+            # Read ALL existing employees
+            cur.execute("SELECT emp_id, first_name, last_name, dob, city, salary FROM employees")
+            rows = cur.fetchall()
+            
+            print(f"Found {len(rows)} existing employees to snapshot")
+            
+            for row in rows:
+                # Create a synthetic INSERT CDC record
+                snapshot_record = {
+                    'action_id': 0,  # Special marker for snapshot
+                    'emp_id': row[0],
+                    'emp_FN': row[1],
+                    'emp_LN': row[2],
+                    'emp_dob': str(row[3]),
+                    'emp_city': row[4],
+                    'emp_salary': row[5],
+                    'action': 'INSERT'
+                }
+                
+                employee_json = json.dumps(snapshot_record)
+                
+                producer.produce(
+                    topic=employee_topic_name,
+                    key=encoder(str(row[0])),
+                    value=encoder(employee_json),
+                    callback=producer.delivery_report
+                )
+            
+            producer.flush()
+            print("Snapshot completed!")
+            
+            cur.close()
+            conn.close()
+            
+        except Exception as e:
+            print(f"Error during snapshot: {e}")
+    
+    # ========== STREAM PROCESSING PHASE ==========
+    print("Starting STREAM processing...")
+    
     try:
         while producer.running:
             # Fetch new CDC records
@@ -131,13 +182,9 @@ if __name__ == '__main__':
                 print(f"Found {len(cdc_records)} new CDC record(s)")
                 
                 for record in cdc_records:
-                    # Create Employee object from database row
                     employee = Employee.from_line(record)
-                    
-                    # Serialize to JSON
                     employee_json = employee.to_json()
                     
-                    # Send to Kafka
                     producer.produce(
                         topic=employee_topic_name,
                         key=encoder(str(employee.emp_id)),
@@ -145,18 +192,13 @@ if __name__ == '__main__':
                         callback=producer.delivery_report
                     )
                     
-                    # Flush to ensure delivery
                     producer.flush()
-                    
-                    # Update offset after successful delivery
                     producer.save_offset(employee.action_id)
                     
                     print(f"Sent: action_id={employee.action_id}, emp_id={employee.emp_id}, action={employee.action}")
             else:
-                # No new records, sleep briefly before polling again
                 time.sleep(1)
             
-            # Poll for delivery reports
             producer.poll(0)
             
     except KeyboardInterrupt:
@@ -164,4 +206,3 @@ if __name__ == '__main__':
     finally:
         producer.flush()
         print("Producer stopped.")
-    
