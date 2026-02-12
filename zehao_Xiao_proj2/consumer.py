@@ -41,7 +41,7 @@ class cdcConsumer(Consumer):
     def __init__(self, host: str = "localhost", port: str = "29092", group_id: str = ''):
         self.conf = {'bootstrap.servers': f'{host}:{port}',
                      'group.id': group_id,
-                     'enable.auto.commit': True,
+                     'enable.auto.commit': False,
                      'auto.offset.reset': 'earliest'}
         super().__init__(self.conf)
         self.keep_runnning = True
@@ -69,14 +69,23 @@ class cdcConsumer(Consumer):
                 else:
                     # Process the message
                     print(f"Received message from partition {msg.partition()} at offset {msg.offset()}")
-                    processing_func(msg)
-                    
+                    try:
+                        processing_func(msg)
+                        
+                        # commit only after successful processing
+                        self.commit(msg)
+                        print(f"successfully Committed offset {msg.offset()}")
+                    except Exception as e:
+                        print(f"Error processing message, NOT committing: {e}")
+                        # Don't commit - message will be reprocessed on restart
+
         except KeyboardInterrupt:
             print("\nConsumer interrupted by user")
         except Exception as e:
             print(f"Consumer error: {e}")
         finally:
             self.close()
+            print("consumer closed")
 
 def update_dst(msg):
     e = Employee(**(json.loads(msg.value())))
@@ -87,7 +96,7 @@ def update_dst(msg):
             user="postgres",
             port = '5433', # change this port number to align with the docker compose file
             password="postgres")
-        conn.autocommit = True
+        conn.autocommit = False
         cur = conn.cursor()
         #your logic goes here
         # Apply changes based on action type
@@ -122,11 +131,13 @@ def update_dst(msg):
         else:
             print(f"Unknown action: {e.action}")
 
-
+        conn.commit()
         cur.close()
         conn.close()
     except Exception as err:
-        print(err)
+        if conn:
+            conn.rollback()
+        raise #re-raise to prevent kafka offset commit
 
 if __name__ == '__main__':
     consumer = cdcConsumer(group_id='cdc_consumer_group_1') 
