@@ -1,4 +1,4 @@
--- Create cdc trigger function
+-- Create CDC trigger function
 CREATE OR REPLACE FUNCTION emp_a_cdc_trigger_fn()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -18,7 +18,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
---Create cdc trigger and execute function
 CREATE TRIGGER emp_a_cdc_trigger
 AFTER INSERT OR UPDATE OR DELETE ON employees
 FOR EACH ROW
